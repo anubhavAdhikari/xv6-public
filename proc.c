@@ -6,6 +6,8 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "pstat.h"
+#include "rand.h"
 
 struct {
   struct spinlock lock;
@@ -38,10 +40,10 @@ struct cpu*
 mycpu(void)
 {
   int apicid, i;
-  
+
   if(readeflags()&FL_IF)
     panic("mycpu called with interrupts enabled\n");
-  
+
   apicid = lapicid();
   // APIC IDs are not guaranteed to be contiguous. Maybe we should have
   // a reverse map, or reserve a register to store &cpus[i].
@@ -88,6 +90,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->tickets = 1;
 
   release(&ptable.lock);
 
@@ -124,7 +127,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -275,7 +278,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -319,22 +322,52 @@ wait(void)
 //  - swtch to start running that process
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
+
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+  int winningTicket = 0;
+  int currTicket = 0;
+  int totalTickets = 0;
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == RUNNABLE){
+      totalTickets += p->tickets;
+    }
+  }
+
+
   for(;;){
     // Enable interrupts on this processor.
     sti();
 
+    winningTicket = 0;
+    currTicket = 0;
+    totalTickets = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state == RUNNABLE){
+        totalTickets += p->tickets;
+      }
+    }
+    if(totalTickets == 0){
+      continue;
+    }
+
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+    winningTicket = next_random()%totalTickets;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+
+      //currTicket += p->tickets;
+      if((currTicket + p->tickets) < winningTicket){
+        currTicket+= p->tickets;
+        continue;
+      }
+      p->ticks+=1;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -418,7 +451,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   if(p == 0)
     panic("sleep");
 
@@ -531,4 +564,33 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+int
+getpinfo(void)
+{
+  struct proc *p;
+  struct pstat *ps;
+
+  if(argptr(0, (void*)&ps, sizeof(struct pstat*) < 0)){
+    return -1;
+  }
+
+  acquire(&ptable.lock);
+  int counter = 0;
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == UNUSED){
+      ps->inuse[counter] = 0;
+    }
+    else{
+      ps->inuse[counter] = 1;
+    }
+    ps->pid[counter] = p->pid;
+    ps->tickets[counter] = p->tickets;
+    ps->ticks[counter] = p->ticks;
+    counter++;
+  }
+  release(&ptable.lock);
+
+  return 0;
 }

@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "proc.h"
+#include "pstat.h"
 
 int
 sys_fork(void)
@@ -100,4 +101,21 @@ sys_date(void)
   }
   cmostime(r);
   return 0;
+}
+
+int
+sys_settickets(void)
+{
+  int number;
+  if(argint(0, &number) < 0){
+    return -1;
+  }
+  myproc()->tickets = number;
+  return 0;
+}
+
+int
+sys_getpinfo(void)
+{
+  return getpinfo();
 }
